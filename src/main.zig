@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn match(thing: anytype) Matcher(PointerChildOfSingle(@TypeOf(thing))) {
+pub fn match(thing: anytype) ArmMatcher(PointerChildOfSingle(@TypeOf(thing))) {
     return .{
         .thing_ptr = thing,
     };
@@ -16,104 +16,108 @@ pub fn PointerChildOfSingle(T: type) type {
     };
 }
 
-pub fn Matcher(T_: type) type {
+pub fn ArmMatcher(T_: type) type {
     return struct {
         pub const T = T_;
         thing_ptr: *const T,
 
         // TODO: should pattern have to be comptime known
-        pub fn arm(self: @This(), pattern: anytype) ?MatchOut(T, pattern) {
-            var out: MatchOut(T, pattern) = undefined;
-            if(!armInner(self.thing_ptr, pattern, &out)) return null;
+        pub fn arm(self: @This(), pattern: anytype) ?Captures(T, pattern) {
+            var out: Captures(T, pattern) = undefined;
+            if (!tryBind(self.thing_ptr, pattern, &out)) return null;
             return out;
-        }
-
-        fn armInner(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
-            const ValType = @typeInfo(@TypeOf(val_ptr)).Pointer.child;
-            if(@TypeOf(pattern) == CustomMatcherType) {
-                const capture_group = pattern(ValType);
-                return capture_group.iface_impl.tryBind(capture_group, val_ptr, out_ptr);
-            }
-            return switch(@typeInfo(ValType)) {
-                .Struct => tryBindStruct(val_ptr, pattern, out_ptr),
-                .Union => tryBindUnion(val_ptr, pattern, out_ptr),
-                .Optional => tryBindOptional(val_ptr, pattern, out_ptr),
-                // TODO: add additional features for matching on scalars
-                .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => pattern == val_ptr.*,
-                // TODO: implement other types
-                else => @compileError("TODO: implement other types"),
-            };
-        }
-        fn tryBindStruct(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
-            const ValType = @typeInfo(@TypeOf(val_ptr)).Pointer.child;
-            inline for(@typeInfo(ValType).Struct.fields) |field| {
-                if(!armInner(&@field(val_ptr, field.name), @field(pattern, field.name), out_ptr)) return false;
-            }
-            return true;
-        }
-        fn tryBindUnion(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
-            const TagEnum = @typeInfo(@TypeOf(val_ptr.*)).Union.tag_type orelse @compileError("matching on a union requires a tag type");
-            const variant_name = @typeInfo(@TypeOf(pattern)).Struct.fields[0].name;
-            // TODO: this might be inefficient
-            if(std.meta.activeTag(val_ptr.*) != @field(TagEnum, variant_name)) return false;
-            return armInner(&@field(val_ptr, variant_name), @field(pattern, variant_name), out_ptr);
-        }
-        fn tryBindOptional(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
-            if(@TypeOf(pattern) == @TypeOf(null)) return val_ptr.* == null;
-
-            if(val_ptr.* == null) return @TypeOf(pattern) == @TypeOf(null);
-
-            const NewValPtrType = comptime blk: {
-                const ChildValType = @typeInfo(@TypeOf(val_ptr.*)).Optional.child;
-                var typeinfo = @typeInfo(@TypeOf(val_ptr));
-                typeinfo.Pointer.child = ChildValType;
-                break :blk @Type(typeinfo);
-            };
-            return armInner(@as(NewValPtrType, @ptrCast(val_ptr)), pattern, out_ptr);
         }
     };
 }
 
-pub fn MatchOut(T: type, pattern: anytype) type {
+fn tryBind(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
+    const ValType = @typeInfo(@TypeOf(val_ptr)).Pointer.child;
+    if (@TypeOf(pattern) == CustomMatcherType) {
+        const capture_group = pattern(ValType);
+        return capture_group.iface_impl.tryBind(capture_group, val_ptr, out_ptr);
+    }
+    return switch (@typeInfo(ValType)) {
+        .Struct => tryBindStruct(val_ptr, pattern, out_ptr),
+        .Union => tryBindUnion(val_ptr, pattern, out_ptr),
+        .Optional => tryBindOptional(val_ptr, pattern, out_ptr),
+        // TODO: add additional features for matching on scalars
+        .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => pattern == val_ptr.*,
+        // TODO: implement other types
+        else => @compileError("TODO: implement other types"),
+    };
+}
+
+fn tryBindStruct(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
+    const ValType = @typeInfo(@TypeOf(val_ptr)).Pointer.child;
+    inline for (@typeInfo(ValType).Struct.fields) |field| {
+        if (!tryBind(&@field(val_ptr, field.name), @field(pattern, field.name), out_ptr)) return false;
+    }
+    return true;
+}
+
+fn tryBindUnion(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
+    const TagEnum = @typeInfo(@TypeOf(val_ptr.*)).Union.tag_type orelse @compileError("matching on a union requires a tag type");
+    const variant_name = @typeInfo(@TypeOf(pattern)).Struct.fields[0].name;
+    // TODO: this might be inefficient
+    if (std.meta.activeTag(val_ptr.*) != @field(TagEnum, variant_name)) return false;
+    return tryBind(&@field(val_ptr, variant_name), @field(pattern, variant_name), out_ptr);
+}
+
+fn tryBindOptional(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
+    if (@TypeOf(pattern) == @TypeOf(null)) return val_ptr.* == null;
+    if (val_ptr.* == null) return @TypeOf(pattern) == @TypeOf(null);
+
+    const NewValPtrType = comptime blk: {
+        const ChildValType = @typeInfo(@TypeOf(val_ptr.*)).Optional.child;
+        var typeinfo = @typeInfo(@TypeOf(val_ptr));
+        typeinfo.Pointer.child = ChildValType;
+        break :blk @Type(typeinfo);
+    };
+    return tryBind(@as(NewValPtrType, @ptrCast(val_ptr)), pattern, out_ptr);
+}
+
+pub fn Captures(T: type, pattern: anytype) type {
     if (@TypeOf(pattern) == CustomMatcherType) return pattern(T).captures;
     return switch (@typeInfo(T)) {
-        .Struct => MatchOutStruct(T, pattern),
-        .Union => MatchOutUnion(T, pattern),
-        .Optional => MatchOutOptional(T, pattern),
+        .Struct => StructCaptures(T, pattern),
+        .Union => UnionCaptures(T, pattern),
+        .Optional => OptionalCaptures(T, pattern),
         .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => struct {},
         // TODO: implement other types
-        else => { @compileLog(T, pattern); @compileError("TODO: implement other types"); },
+        else => {
+            @compileLog(T, pattern);
+            @compileError("TODO: implement other types");
+        },
     };
 }
 
 /// assumes T is a struct type
-pub fn MatchOutStruct(T: type, pattern: anytype) type {
+pub fn StructCaptures(T: type, pattern: anytype) type {
     validateStructPattern(pattern);
     const pattern_info = @typeInfo(@TypeOf(pattern)).Struct;
-    if(@typeInfo(T).Struct.fields.len != pattern_info.fields.len) @compileError(std.fmt.comptimePrint(
+    if (@typeInfo(T).Struct.fields.len != pattern_info.fields.len) @compileError(std.fmt.comptimePrint(
         \\ Found {d} fields in the pattern. Expected {d} in the match type. Use the __ function to always match
-        ,.{pattern_info.fields.len, @typeInfo(T).Struct.fields.len}));
+    , .{ pattern_info.fields.len, @typeInfo(T).Struct.fields.len }));
     var out_types: [pattern_info.fields.len]type = undefined;
-    for(&out_types, pattern_info.fields) |*out, field_info| {
+    for (&out_types, pattern_info.fields) |*out, field_info| {
         if (!@hasField(T, field_info.name)) @compileError(std.fmt.comptimePrint("Field name \"{s}\" in pattern does not exist in match type", .{field_info.name}));
-        out.* = MatchOut(@TypeOf(@field(@as(T, undefined), field_info.name)), @field(pattern, field_info.name));
+        out.* = Captures(@TypeOf(@field(@as(T, undefined), field_info.name)), @field(pattern, field_info.name));
     }
     return FlattenStructs(&out_types);
 }
 
-pub fn MatchOutUnion(T: type, pattern: anytype) type {
+pub fn UnionCaptures(T: type, pattern: anytype) type {
     validateStructPattern(pattern);
     const pattern_info = @typeInfo(@TypeOf(pattern)).Struct;
-    if(pattern_info.fields.len > 1) @compileError("Pattern contains multiple variants of the same union for matching, use oneof for this purpose");
+    if (pattern_info.fields.len > 1) @compileError("Pattern contains multiple variants of the same union for matching, use oneof for this purpose");
     const variant_name = pattern_info.fields[0].name;
-    return MatchOut(@TypeOf(@field(@as(T, undefined), variant_name)), @field(pattern, variant_name));
+    return Captures(@TypeOf(@field(@as(T, undefined), variant_name)), @field(pattern, variant_name));
 }
 
-pub fn MatchOutOptional(T: type, pattern: anytype) type {
-    if(@TypeOf(pattern) == @TypeOf(null)) return struct {};
+pub fn OptionalCaptures(T: type, pattern: anytype) type {
+    if (@TypeOf(pattern) == @TypeOf(null)) return struct {};
 
-    return MatchOut(@typeInfo(T).Optional.child, pattern);
-    
+    return Captures(@typeInfo(T).Optional.child, pattern);
 }
 
 /// asserts that a pattern is of struct type and not a tuple
@@ -123,11 +127,12 @@ pub fn validateStructPattern(pattern: anytype) void {
     if (pattern_info.Struct.is_tuple) @compileError("Found tuple type when pattern matching against struct, must use a struct with the field names");
 }
 
-pub const CustomMatcherType = fn (comptime type) CustomMatcher;
+pub const CustomMatcherType = fn (comptime type) Matcher;
 
-pub const CustomMatcher = struct {
+pub const Matcher = struct {
     /// struct type of all the captures
     captures: type,
+    // TODO: remove this maybe
     ctx: ?struct {
         /// T is the child type of ptr
         T: type,
@@ -137,14 +142,14 @@ pub const CustomMatcher = struct {
 
     iface_impl: struct {
         // TODO: do we want val_ptr or just val
-        tryBind: fn (self: CustomMatcher, val_ptr: anytype, out_ptr: anytype) bool,
+        tryBind: fn (self: Matcher, val_ptr: anytype, out_ptr: anytype) bool,
     },
 };
 
 /// binds a fields value to the name, to be accessed in the out of the arm
 pub fn bind(name: [:0]const u8) CustomMatcherType {
-    const tryBind = struct {
-        pub fn f(self: CustomMatcher, val_ptr: anytype, out_ptr: anytype) bool {
+    const try_bind_fn = struct {
+        pub fn f(self: Matcher, val_ptr: anytype, out_ptr: anytype) bool {
             const fields = @typeInfo(self.captures).Struct.fields;
             @field(out_ptr, fields[0].name) = val_ptr.*;
             return true;
@@ -152,7 +157,7 @@ pub fn bind(name: [:0]const u8) CustomMatcherType {
     }.f;
     return struct {
         /// TODO: maybe have to pass in alignment?
-        pub fn f(comptime T: type) CustomMatcher {
+        pub fn f(comptime T: type) Matcher {
             const capture_field: std.builtin.Type.StructField = .{
                 .name = name,
                 .is_comptime = false,
@@ -169,24 +174,22 @@ pub fn bind(name: [:0]const u8) CustomMatcherType {
             return .{
                 .captures = capture_type,
                 .iface_impl = .{
-                    .tryBind = tryBind,
-                }
+                    .tryBind = try_bind_fn,
+                },
             };
         }
     }.f;
 }
 
 /// matches everything successfully
-pub fn __(_: type) CustomMatcher {
+pub fn __(_: type) Matcher {
     return .{
         .captures = struct {},
-        .iface_impl = .{
-            .tryBind = struct {
-                pub fn f(_: CustomMatcher, _: anytype, _: anytype) bool {
-                    return true;
-                }
-            }.f
-        }
+        .iface_impl = .{ .tryBind = struct {
+            pub fn f(_: Matcher, _: anytype, _: anytype) bool {
+                return true;
+            }
+        }.f },
     };
 }
 
@@ -211,23 +214,9 @@ pub fn FlattenStructs(types: []type) type {
     } });
 }
 
-/// basically std.meta.FieldEnum
-fn StructFieldEnum(fields_info: []const std.builtin.Type.StructField) type {
-    var enum_fields: [fields_info.len]std.builtin.Type.EnumField = undefined;
-    for (fields_info, &enum_fields, 0..) |field, *enum_field, val| {
-        enum_field.* = .{ .name = field.name, .value = val };
-    }
-    return @Type(.{ .Enum = .{
-        .tag_type = if (fields_info.len == 0) u0 else std.math.IntFittingRange(0, fields_info.len - 1),
-        .is_exhaustive = true,
-        .fields = &enum_fields,
-        .decls = &.{},
-    } });
-}
-
-test MatchOut {
+test Captures {
     const thing: struct { age: u32, birth: u64 } = undefined;
-    const out = @typeInfo(MatchOut(@TypeOf(thing), .{ .age = bind("age_years"), .birth = bind("birthday_utc") }));
+    const out = @typeInfo(Captures(@TypeOf(thing), .{ .age = bind("age_years"), .birth = bind("birthday_utc") }));
     const exp_out = @typeInfo(struct { age_years: u32, birthday_utc: u64 });
 
     // for some reason this errors if called without comptime
@@ -235,35 +224,29 @@ test MatchOut {
 }
 
 test match {
-    const thing: struct { age: u32, birth: u64, pos: struct { x: u8, y: u8 } } = .{.age = 3, .birth = 2, .pos = .{.x = 90, .y = 20}};
+    const thing: struct { age: u32, birth: u64, pos: struct { x: u8, y: u8 } } = .{ .age = 3, .birth = 2, .pos = .{ .x = 90, .y = 20 } };
     const m = comptime match(&thing);
-    const res = m.arm(.{.age = 3, .birth = bind("hello"), .pos = .{.x = bind("__x__"), .y = 20}});
+    const res = m.arm(.{ .age = 3, .birth = bind("hello"), .pos = .{ .x = bind("__x__"), .y = 20 } });
     try std.testing.expectEqual(2, res.?.hello);
     try std.testing.expectEqual(90, res.?.__x__);
 
-    const res2 = m.arm(.{.age = 3, .birth = bind("hello"), .pos = bind("pos")});
+    const res2 = m.arm(.{ .age = 3, .birth = bind("hello"), .pos = bind("pos") });
     try std.testing.expectEqual(2, res2.?.hello);
     try std.testing.expectEqual(90, res2.?.pos.x);
     try std.testing.expectEqual(20, res2.?.pos.y);
 
-    const res3 = m.arm(.{.age = __, .birth = __, .pos = .{.x = __, .y = bind("y")}});
+    const res3 = m.arm(.{ .age = __, .birth = __, .pos = .{ .x = __, .y = bind("y") } });
     try std.testing.expectEqual(20, res3.?.y);
 }
 test "match: unions" {
-    const Thing = struct {
-        val: u32,
-        impl: union(enum) {
-            foo: u64,
-            bar: f64
-        }
-    };
+    const Thing = struct { val: u32, impl: union(enum) { foo: u64, bar: f64 } };
     {
-        const thing: Thing = .{.val = 1000, .impl = .{.foo = 90}};
+        const thing: Thing = .{ .val = 1000, .impl = .{ .foo = 90 } };
         const m = comptime match(&thing);
 
-        const res = m.arm(.{.val = 1000, .impl = .{.bar = __}});
-        const res2 = m.arm(.{.val = __, .impl = .{.foo = 91}});
-        const res3 = m.arm(.{.val = __, .impl = .{.foo = bind("hello")}});
+        const res = m.arm(.{ .val = 1000, .impl = .{ .bar = __ } });
+        const res2 = m.arm(.{ .val = __, .impl = .{ .foo = 91 } });
+        const res3 = m.arm(.{ .val = __, .impl = .{ .foo = bind("hello") } });
 
         try std.testing.expectEqual(null, res);
         try std.testing.expectEqual(null, res2);
@@ -282,22 +265,22 @@ test "match: optionals" {
         proof: u32,
     };
     {
-        const thing: House = .{.address = null, .quality = null, .proof = 1};
+        const thing: House = .{ .address = null, .quality = null, .proof = 1 };
         const m = comptime match(&thing);
-        const res = m.arm(.{.address = null, .quality = null, .proof = bind("proof")});
-        const res2 = m.arm(.{.address = .{.number = __, .street_num = __, .duplex_is_first = __}, .quality = null, .proof = 1});
-        const res3 = m.arm(.{.address = __, .quality = null, .proof = bind("proof")});
+        const res = m.arm(.{ .address = null, .quality = null, .proof = bind("proof") });
+        const res2 = m.arm(.{ .address = .{ .number = __, .street_num = __, .duplex_is_first = __ }, .quality = null, .proof = 1 });
+        const res3 = m.arm(.{ .address = __, .quality = null, .proof = bind("proof") });
 
         try std.testing.expectEqual(1, res.?.proof);
         try std.testing.expectEqual(null, res2);
         try std.testing.expectEqual(1, res3.?.proof);
     }
     {
-        const thing: House = .{.address = .{.number = 1235, .street_num = 2, .duplex_is_first = true }, .quality = 2, .proof = 1};
+        const thing: House = .{ .address = .{ .number = 1235, .street_num = 2, .duplex_is_first = true }, .quality = 2, .proof = 1 };
         const m = comptime match(&thing);
-        const res = m.arm(.{.address = null, .quality = null, .proof = 1});
-        const res2 = m.arm(.{.address = .{.number = __, .street_num = __, .duplex_is_first = __}, .quality = null, .proof = 1});
-        const res3 = m.arm(.{.address = __, .quality = null, .proof = 1});
+        const res = m.arm(.{ .address = null, .quality = null, .proof = 1 });
+        const res2 = m.arm(.{ .address = .{ .number = __, .street_num = __, .duplex_is_first = __ }, .quality = null, .proof = 1 });
+        const res3 = m.arm(.{ .address = __, .quality = null, .proof = 1 });
 
         try std.testing.expectEqual(null, res);
         try std.testing.expectEqual(null, res2);
