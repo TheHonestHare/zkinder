@@ -81,31 +81,31 @@ fn tryBindArray(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
     // all invalid patterns should have been caught by ArrayCaptures (such as .{ ..., thing2, ...}) but in the future analysis order might change, causing confusing errors here
     const ValType = @typeInfo(@TypeOf(val_ptr)).Pointer.child;
     const real_len = @typeInfo(@TypeOf(val_ptr.*)).Array.len;
-    if(real_len < pattern.len) @compileError("Array pattern is longer than the actual array");
-    const idx_of_matcher: ?usize = comptime for(&pattern, 0..) |pattern_field, i| {
-        if(@TypeOf(pattern_field) == SubArrayMatcherType) break i;
+    if (real_len < pattern.len) @compileError("Array pattern is longer than the actual array");
+    const idx_of_matcher: ?usize = comptime for (&pattern, 0..) |pattern_field, i| {
+        if (@TypeOf(pattern_field) == SubArrayMatcherType) break i;
     } else null;
     // case where there is a special SubArrayMatcher somewhere
-    if(idx_of_matcher) |idx_of_matcher_| {
+    if (idx_of_matcher) |idx_of_matcher_| {
         const start_subarray = idx_of_matcher_;
         const end_subarray = real_len - pattern.len + 1 + idx_of_matcher_;
 
         // TODO: use slicing of tuples https://github.com/ziglang/zig/issues/4625
         // start
         inline for (0..idx_of_matcher_) |i| {
-            if(!tryBind(&val_ptr[i], pattern[i], out_ptr)) return false;
+            if (!tryBind(&val_ptr[i], pattern[i], out_ptr)) return false;
         }
         // middle
         const custom_matcher = pattern[idx_of_matcher_](ValType);
-        if(!custom_matcher.tryBind(custom_matcher, val_ptr[start_subarray..end_subarray], out_ptr)) return false;
+        if (!custom_matcher.tryBind(custom_matcher, val_ptr[start_subarray..end_subarray], out_ptr)) return false;
         //end
-        inline for (idx_of_matcher_+1.., end_subarray..real_len) |pattern_i, i| {
-            if(!tryBind(&val_ptr[i], pattern[pattern_i], out_ptr)) return false;
+        inline for (idx_of_matcher_ + 1.., end_subarray..real_len) |pattern_i, i| {
+            if (!tryBind(&val_ptr[i], pattern[pattern_i], out_ptr)) return false;
         }
-    // case where theres no special SubArrayMatcher
+        // case where theres no special SubArrayMatcher
     } else {
-        inline for(pattern, 0..) |pattern_field, i| {
-            if(!tryBind(&val_ptr[i], pattern_field, out_ptr)) return false;
+        inline for (pattern, 0..) |pattern_field, i| {
+            if (!tryBind(&val_ptr[i], pattern_field, out_ptr)) return false;
         }
     }
     return true;
@@ -163,12 +163,12 @@ pub fn ArrayCaptures(T: type, pattern: anytype) type {
     const T_info = @typeInfo(T);
     var out_types: [pattern.len]type = undefined;
 
-    if(@TypeOf(pattern[0]) == SubArrayMatcherType and @TypeOf(pattern[pattern.len-1]) == SubArrayMatcherType) {
-        @compileError("subarray matchers cannot be at both the start and the end of the pattern");        
+    if (@TypeOf(pattern[0]) == SubArrayMatcherType and @TypeOf(pattern[pattern.len - 1]) == SubArrayMatcherType) {
+        @compileError("subarray matchers cannot be at both the start and the end of the pattern");
     }
 
     const real_len = @typeInfo(T).Array.len;
-    if(real_len < pattern.len) @compileError("Array pattern is longer than the actual array");
+    if (real_len < pattern.len) @compileError("Array pattern is longer than the actual array");
     const SubArrayType = @Type(.{
         .Array = .{
             .child = T_info.Array.child,
@@ -178,35 +178,35 @@ pub fn ArrayCaptures(T: type, pattern: anytype) type {
     });
     // .{ thing1, thing2, ... }
     if (@TypeOf(pattern[pattern.len - 1]) == SubArrayMatcherType) {
-        for (out_types[0..pattern.len-1], 0..) |*out, i| {
-            if(@TypeOf(pattern[i]) == SubArrayMatcherType) @compileError("Cannot have a subarray matcher at both the middle and end of a pattern");
+        for (out_types[0 .. pattern.len - 1], 0..) |*out, i| {
+            if (@TypeOf(pattern[i]) == SubArrayMatcherType) @compileError("Cannot have a subarray matcher at both the middle and end of a pattern");
             out.* = Captures(T_info.Array.child, pattern[i]);
         }
-        out_types[pattern.len-1] = pattern[pattern.len - 1](SubArrayType).captures;
-    // .{ ..., thing3, thing4 }
+        out_types[pattern.len - 1] = pattern[pattern.len - 1](SubArrayType).captures;
+        // .{ ..., thing3, thing4 }
     } else if (@TypeOf(pattern[0]) == SubArrayMatcherType) {
         out_types[0] = pattern[0](SubArrayType).captures;
         for (out_types[1..pattern.len], 1..) |*out, i| {
-            if(@TypeOf(pattern[i]) == SubArrayMatcherType) @compileError("Cannot have a subarray matcher at both the start and middle of a pattern");
+            if (@TypeOf(pattern[i]) == SubArrayMatcherType) @compileError("Cannot have a subarray matcher at both the start and middle of a pattern");
             out.* = Captures(T_info.Array.child, pattern[i]);
         }
     } else {
         for (&out_types, 0..) |*out, i| {
             // .{ thing1, thing2, thing3, thing4 }
-            if(@TypeOf(pattern[i]) != SubArrayMatcherType) {
+            if (@TypeOf(pattern[i]) != SubArrayMatcherType) {
                 out.* = Captures(T_info.Array.child, pattern[i]);
                 continue;
             }
             // .{ thing1, ..., thing4 }
             out_types[i] = pattern[i](SubArrayType).captures;
-            for (out_types[i+1..], i+1..) |*out_, i_| {
-                if(@TypeOf(pattern[i_]) == SubArrayMatcherType) @compileError("Cannot have 2 subarray matchers in a pattern");
+            for (out_types[i + 1 ..], i + 1..) |*out_, i_| {
+                if (@TypeOf(pattern[i_]) == SubArrayMatcherType) @compileError("Cannot have 2 subarray matchers in a pattern");
                 out_.* = Captures(T_info.Array.child, pattern[i_]);
             }
             break;
-        // the loop finished successfully, meaning no subarray matchers were found
+            // the loop finished successfully, meaning no subarray matchers were found
         } else {
-            if(T_info.Array.len != pattern.len) @compileError("Array pattern without subarray matcher is not the same size as the actual array");
+            if (T_info.Array.len != pattern.len) @compileError("Array pattern without subarray matcher is not the same size as the actual array");
         }
     }
 
@@ -410,21 +410,21 @@ test "match: optionals" {
 }
 
 test "match: arrays" {
-    const list = [_]u8{0, 9, 100, 140};
+    const list = [_]u8{ 0, 9, 100, 140 };
     const m = comptime match(&list);
-    const res = m.arm(.{0, 9, 100, bind("num")});
-    const res2 = m.arm(.{bindrest("first2"), 100, 140});
-    const res3 = m.arm(.{bind("head"), bindrest("tail")});
-    const res4 = m.arm(.{1, bindrest("tail")});
-    const res5 = m.arm(.{0, bindrest("middle"), 140});
+    const res = m.arm(.{ 0, 9, 100, bind("num") });
+    const res2 = m.arm(.{ bindrest("first2"), 100, 140 });
+    const res3 = m.arm(.{ bind("head"), bindrest("tail") });
+    const res4 = m.arm(.{ 1, bindrest("tail") });
+    const res5 = m.arm(.{ 0, bindrest("middle"), 140 });
 
     try std.testing.expectEqual(140, res.?.num);
-    try std.testing.expectEqualSlices(u8, &.{0, 9}, &res2.?.first2);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 9 }, &res2.?.first2);
     {
         try std.testing.expectEqual(0, res3.?.head);
-        try std.testing.expectEqualSlices(u8, &.{9, 100, 140}, &res3.?.tail);
+        try std.testing.expectEqualSlices(u8, &.{ 9, 100, 140 }, &res3.?.tail);
     }
     try std.testing.expectEqual(null, res4);
     @compileLog(@typeInfo(@TypeOf(res5.?)).Struct.fields);
-    try std.testing.expectEqualSlices(u8, &.{9, 100}, &res5.?.middle);
+    try std.testing.expectEqualSlices(u8, &.{ 9, 100 }, &res5.?.middle);
 }
