@@ -111,7 +111,7 @@ fn tryBindArray(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
     return true;
 }
 
-pub fn Captures(T: type, pattern: anytype) type {
+fn Captures(T: type, pattern: anytype) type {
     if (@TypeOf(pattern) == MatcherType) return pattern(T).captures;
     return switch (@typeInfo(T)) {
         .Struct => StructCaptures(T, pattern),
@@ -119,6 +119,7 @@ pub fn Captures(T: type, pattern: anytype) type {
         .Optional => OptionalCaptures(T, pattern),
         .Array => ArrayCaptures(T, pattern),
         .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => struct {},
+        .Pointer => PointerCaptures(T, pattern),
         // TODO: implement other types
         else => {
             @compileLog(T, pattern);
@@ -128,7 +129,7 @@ pub fn Captures(T: type, pattern: anytype) type {
 }
 
 /// assumes T is a struct type
-pub fn StructCaptures(T: type, pattern: anytype) type {
+fn StructCaptures(T: type, pattern: anytype) type {
     validateStructPattern(pattern);
     const pattern_info = @typeInfo(@TypeOf(pattern)).Struct;
     if (@typeInfo(T).Struct.fields.len != pattern_info.fields.len) @compileError(std.fmt.comptimePrint(
@@ -142,7 +143,7 @@ pub fn StructCaptures(T: type, pattern: anytype) type {
     return FlattenStructs(&out_types);
 }
 
-pub fn UnionCaptures(T: type, pattern: anytype) type {
+fn UnionCaptures(T: type, pattern: anytype) type {
     validateStructPattern(pattern);
     const pattern_info = @typeInfo(@TypeOf(pattern)).Struct;
     if (pattern_info.fields.len > 1) @compileError("Pattern contains multiple variants of the same union for matching, use oneof for this purpose");
@@ -150,13 +151,13 @@ pub fn UnionCaptures(T: type, pattern: anytype) type {
     return Captures(@TypeOf(@field(@as(T, undefined), variant_name)), @field(pattern, variant_name));
 }
 
-pub fn OptionalCaptures(T: type, pattern: anytype) type {
+fn OptionalCaptures(T: type, pattern: anytype) type {
     if (@TypeOf(pattern) == @TypeOf(null)) return struct {};
 
     return Captures(@typeInfo(T).Optional.child, pattern);
 }
 
-pub fn ArrayCaptures(T: type, pattern: anytype) type {
+fn ArrayCaptures(T: type, pattern: anytype) type {
     const pattern_info = @typeInfo(@TypeOf(pattern));
     if (pattern_info != .Struct) @compileError(std.fmt.comptimePrint("Matching against arrays expects tuple type for pattern, found {}", .{@TypeOf(pattern)}));
     if (!pattern_info.Struct.is_tuple) @compileError("Expected a tuple type when matching against arrays");
@@ -214,7 +215,7 @@ pub fn ArrayCaptures(T: type, pattern: anytype) type {
 }
 
 /// asserts that a pattern is of struct type and not a tuple
-pub fn validateStructPattern(pattern: anytype) void {
+fn validateStructPattern(pattern: anytype) void {
     const pattern_info = @typeInfo(@TypeOf(pattern));
     if (pattern_info != .Struct) @compileError(std.fmt.comptimePrint("Expected a struct type for pattern, found: {}", .{@TypeOf(pattern)}));
     if (pattern_info.Struct.is_tuple) @compileError("Found tuple type when pattern matching against struct, must use a struct with the field names");
@@ -314,7 +315,7 @@ pub fn bindrest(name: [:0]const u8) SubArrayMatcherType {
 }
 
 /// flattens an array of struct types into 1 struct type
-pub fn FlattenStructs(types: []type) type {
+fn FlattenStructs(types: []type) type {
     var acc: comptime_int = 0;
     for (types) |type_| acc += @typeInfo(type_).Struct.fields.len;
 
