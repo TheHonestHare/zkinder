@@ -119,7 +119,6 @@ fn Captures(T: type, pattern: anytype) type {
         .Optional => OptionalCaptures(T, pattern),
         .Array => ArrayCaptures(T, pattern),
         .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => struct {},
-        .Pointer => PointerCaptures(T, pattern),
         // TODO: implement other types
         else => {
             @compileLog(T, pattern);
