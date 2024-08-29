@@ -8,8 +8,8 @@ pub fn match(thing: anytype) ArmMatcher(PointerChildOfSingle(@TypeOf(thing))) {
 
 pub fn PointerChildOfSingle(T: type) type {
     return switch (@typeInfo(T)) {
-        .Pointer => |ptridx_of_matcher_nfo| switch (ptridx_of_matcher_nfo.size) {
-            .One => ptridx_of_matcher_nfo.child,
+        .Pointer => |ptrinfo| switch (ptrinfo.size) {
+            .One => ptrinfo.child,
             .Many, .Slice, .C => @compileError("Thing passed into match must be single item pointer"),
         },
         else => @compileError("Thing passed into match must be single item pointer"),
@@ -43,6 +43,12 @@ fn tryBind(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
         .Array => tryBindArray(val_ptr, pattern, out_ptr),
         // TODO: add additional features for matching on scalars
         .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => pattern == val_ptr.*,
+        .Pointer => |payload| switch (payload.size) {
+            .One => tryBind(val_ptr.*, pattern, out_ptr),
+            .Slice => @compileError("TODO"),
+            // already compile errors in PointerCaptures
+            .Many, .C => unreachable,
+        },
         // TODO: implement other types
         else => @compileError("TODO: implement other types"),
     };
@@ -75,6 +81,11 @@ fn tryBindOptional(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
         break :blk @Type(typeinfo);
     };
     return tryBind(@as(NewValPtrType, @ptrCast(val_ptr)), pattern, out_ptr);
+}
+
+fn tryBindSinglePointer(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
+    // cases with double pointers are handled in PointerCaptures
+    return tryBind(val_ptr.*, pattern, out_ptr);
 }
 
 fn tryBindArray(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
@@ -119,6 +130,7 @@ fn Captures(T: type, pattern: anytype) type {
         .Optional => OptionalCaptures(T, pattern),
         .Array => ArrayCaptures(T, pattern),
         .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => struct {},
+        .Pointer => PointerCaptures(T, pattern),
         // TODO: implement other types
         else => {
             @compileLog(T, pattern);
@@ -135,9 +147,9 @@ fn StructCaptures(T: type, pattern: anytype) type {
         \\ Found {d} fields in the pattern. Expected {d} in the match type. Use the __ function to always match
     , .{ pattern_info.fields.len, @typeInfo(T).Struct.fields.len }));
     var out_types: [pattern_info.fields.len]type = undefined;
-    for (&out_types, pattern_info.fields) |*out, fieldidx_of_matcher_nfo| {
-        if (!@hasField(T, fieldidx_of_matcher_nfo.name)) @compileError(std.fmt.comptimePrint("Field name \"{s}\" in pattern does not exist in match type", .{fieldidx_of_matcher_nfo.name}));
-        out.* = Captures(@TypeOf(@field(@as(T, undefined), fieldidx_of_matcher_nfo.name)), @field(pattern, fieldidx_of_matcher_nfo.name));
+    for (&out_types, pattern_info.fields) |*out, fieldinfo| {
+        if (!@hasField(T, fieldinfo.name)) @compileError(std.fmt.comptimePrint("Field name \"{s}\" in pattern does not exist in match type", .{fieldinfo.name}));
+        out.* = Captures(@TypeOf(@field(@as(T, undefined), fieldinfo.name)), @field(pattern, fieldinfo.name));
     }
     return FlattenStructs(&out_types);
 }
@@ -154,6 +166,16 @@ fn OptionalCaptures(T: type, pattern: anytype) type {
     if (@TypeOf(pattern) == @TypeOf(null)) return struct {};
 
     return Captures(@typeInfo(T).Optional.child, pattern);
+}
+
+// TODO: maybe disallow double pointer captures (status quo is just deref them all bc thats easiest)
+fn PointerCaptures(T: type, pattern: anytype) type {
+    const T_info = @typeInfo(T).Pointer;
+    switch (T_info.size) {
+        .One => return Captures(T_info.child, pattern),
+        .Slice => @compileError("TODO"),
+        .Many, .C => @compileError("Cannot match against many or C pointer types"),
+    }
 }
 
 fn ArrayCaptures(T: type, pattern: anytype) type {
@@ -380,7 +402,7 @@ test "match: optionals" {
         address: ?struct {
             number: u32,
             street_num: u64,
-            duplexidx_of_matcher_s_first: ?bool,
+            duplex_is_first: ?bool,
         },
         quality: ?u32,
         proof: u32,
@@ -389,7 +411,7 @@ test "match: optionals" {
         const thing: House = .{ .address = null, .quality = null, .proof = 1 };
         const m = comptime match(&thing);
         const res = m.arm(.{ .address = null, .quality = null, .proof = bind("proof") });
-        const res2 = m.arm(.{ .address = .{ .number = __, .street_num = __, .duplexidx_of_matcher_s_first = __ }, .quality = null, .proof = 1 });
+        const res2 = m.arm(.{ .address = .{ .number = __, .street_num = __, .duplex_is_first = __ }, .quality = null, .proof = 1 });
         const res3 = m.arm(.{ .address = __, .quality = null, .proof = bind("proof") });
 
         try std.testing.expectEqual(1, res.?.proof);
@@ -397,10 +419,10 @@ test "match: optionals" {
         try std.testing.expectEqual(1, res3.?.proof);
     }
     {
-        const thing: House = .{ .address = .{ .number = 1235, .street_num = 2, .duplexidx_of_matcher_s_first = true }, .quality = 2, .proof = 1 };
+        const thing: House = .{ .address = .{ .number = 1235, .street_num = 2, .duplex_is_first = true }, .quality = 2, .proof = 1 };
         const m = comptime match(&thing);
         const res = m.arm(.{ .address = null, .quality = null, .proof = 1 });
-        const res2 = m.arm(.{ .address = .{ .number = __, .street_num = __, .duplexidx_of_matcher_s_first = __ }, .quality = null, .proof = 1 });
+        const res2 = m.arm(.{ .address = .{ .number = __, .street_num = __, .duplex_is_first = __ }, .quality = null, .proof = 1 });
         const res3 = m.arm(.{ .address = __, .quality = null, .proof = 1 });
 
         try std.testing.expectEqual(null, res);
@@ -425,6 +447,44 @@ test "match: arrays" {
         try std.testing.expectEqualSlices(u8, &.{ 9, 100, 140 }, &res3.?.tail);
     }
     try std.testing.expectEqual(null, res4);
-    @compileLog(@typeInfo(@TypeOf(res5.?)).Struct.fields);
     try std.testing.expectEqualSlices(u8, &.{ 9, 100 }, &res5.?.middle);
+}
+
+test "match: single pointers" {
+    const House = struct {
+        address: ?*const struct {
+            number: u32,
+            street_num: *const u64,
+            duplex_is_first: ?bool,
+        },
+        quality: *const u32,
+        proof: u32,
+    };
+    const house: House = .{
+        .address = &.{
+            .number = 233,
+            .street_num = &3,
+            .duplex_is_first = true,
+        },
+        .quality = &0,
+        .proof = 1,
+    };
+    const m = comptime match(&house);
+
+    const res = m.arm(.{ .address = __, .quality = 0, .proof = bind("proof") });
+    const res2 = m.arm(.{ .address = __, .quality = 1, .proof = bind("proof") });
+    const res3 = m.arm(.{ .address = __, .quality = __, .proof = bind("proof") });
+    try std.testing.expectEqual(1, res.?.proof);
+    try std.testing.expectEqual(null, res2);
+    try std.testing.expectEqual(1, res3.?.proof);
+
+    const res4 = m.arm(.{ .address = .{ .number = 233, .street_num = __, .duplex_is_first = true }, .quality = __, .proof = bind("proof") });
+    const res5 = m.arm(.{ .address = .{ .number = 999, .street_num = __, .duplex_is_first = false }, .quality = __, .proof = bind("proof") });
+    try std.testing.expectEqual(1, res4.?.proof);
+    try std.testing.expectEqual(null, res5);
+
+    const res6 = m.arm(.{ .address = .{ .number = __, .street_num = 3, .duplex_is_first = __ }, .quality = __, .proof = bind("proof") });
+    const res7 = m.arm(.{ .address = .{ .number = __, .street_num = 23339, .duplex_is_first = __ }, .quality = __, .proof = bind("proof") });
+    try std.testing.expectEqual(1, res6.?.proof);
+    try std.testing.expectEqual(null, res7);
 }
