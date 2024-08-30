@@ -41,6 +41,8 @@ try std.testing.expectEqual(20, res4.?.y);
   - arrays
     - can even match on a subarray using `bindrest` (see test "match: arrays")
   - single item pointers (patterns match on the child type)
+  - slices
+    - support same features as arrays, plus different length patterns
 - extracting values out via `bind`
 - matching aginst anything via `__`
 - support for creating your own match predicates
@@ -49,7 +51,7 @@ try std.testing.expectEqual(20, res4.?.y);
   - the impl will take in this type, pass in the type it needs to bind to and collect all the needed captures
   - TODO: make like 10x more ergonomic
 ## Planned features:
-- matching on slices, vectors, others maybe?
+- matching on vectors, others maybe?
 - optimize this so its not just willy nilly checking basically
 - exhaustive patterns (hardmode)
 - unreachable pattern errors (if I feel like it)

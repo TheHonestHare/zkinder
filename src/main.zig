@@ -45,7 +45,7 @@ fn tryBind(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
         .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => pattern == val_ptr.*,
         .Pointer => |payload| switch (payload.size) {
             .One => tryBind(val_ptr.*, pattern, out_ptr),
-            .Slice => @compileError("TODO"),
+            .Slice => tryBindSlice(val_ptr.*, pattern, out_ptr),
             // already compile errors in PointerCaptures
             .Many, .C => unreachable,
         },
@@ -112,13 +112,48 @@ fn tryBindArray(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
         const custom_matcher = pattern[idx_of_matcher_](ChildT, subslice_len);
         if (!custom_matcher.tryBind(custom_matcher, val_ptr[start_subarray..end_subarray], out_ptr)) return false;
         //end
-        inline for (idx_of_matcher_ + 1.., end_subarray..real_len) |pattern_i, i| {
+        inline for (idx_of_matcher_ + 1..pattern.len, end_subarray..real_len) |pattern_i, i| {
             if (!tryBind(&val_ptr[i], pattern[pattern_i], out_ptr)) return false;
         }
         // case where theres no special SubArrayMatcher
     } else {
         inline for (pattern, 0..) |pattern_field, i| {
             if (!tryBind(&val_ptr[i], pattern_field, out_ptr)) return false;
+        }
+    }
+    return true;
+}
+
+fn tryBindSlice(val_slice: anytype, pattern: anytype, out_ptr: anytype) bool {
+    // all invalid patterns should have been caught by SliceCaptures (such as .{ ..., thing2, ...}) but in the future analysis order might change, causing confusing errors here
+    const real_len = val_slice.len;
+    const ChildT = @typeInfo(@TypeOf(val_slice)).Pointer.child;
+    if(real_len < pattern.len) return false;
+    const idx_of_matcher: ?usize = comptime for (&pattern, 0..) |pattern_field, i| {
+        if (@TypeOf(pattern_field) == SubSliceMatcherType) break i;
+    } else null;
+    // case where there is a special SubArrayMatcher somewhere
+    if (idx_of_matcher) |idx_of_matcher_| {
+        const start_subarray = idx_of_matcher_;
+        const end_subarray = real_len - pattern.len + 1 + idx_of_matcher_;
+
+        // TODO: use slicing of tuples https://github.com/ziglang/zig/issues/4625
+        // start
+        inline for (0..idx_of_matcher_) |i| {
+            if (!tryBind(&val_slice[i], pattern[i], out_ptr)) return false;
+        }
+        // middle
+        const custom_matcher = pattern[idx_of_matcher_](ChildT, null);
+        if (!custom_matcher.tryBind(custom_matcher, val_slice[start_subarray..end_subarray], out_ptr)) return false;
+        //end
+        inline for (idx_of_matcher_ + 1..pattern.len, end_subarray..real_len) |pattern_i, i| {
+            if (!tryBind(&val_slice[i], pattern[pattern_i], out_ptr)) return false;
+        }
+        // case where theres no special SubArrayMatcher
+    } else {
+        if(real_len != pattern.len) return false;
+        inline for (pattern, 0..) |pattern_field, i| {
+            if (!tryBind(&val_slice[i], pattern_field, out_ptr)) return false;
         }
     }
     return true;
@@ -173,11 +208,11 @@ fn OptionalCaptures(T: type, pattern: anytype) type {
 // TODO: maybe disallow double pointer captures (status quo is just deref them all bc thats easiest)
 fn PointerCaptures(T: type, pattern: anytype) type {
     const T_info = @typeInfo(T).Pointer;
-    switch (T_info.size) {
-        .One => return Captures(T_info.child, pattern),
-        .Slice => @compileError("TODO"),
+    return switch (T_info.size) {
+        .One => Captures(T_info.child, pattern),
+        .Slice => SliceCaptures(T, pattern),
         .Many, .C => @compileError("Cannot match against many or C pointer types"),
-    }
+    };
 }
 
 fn ArrayCaptures(T: type, pattern: anytype) type {
@@ -195,6 +230,7 @@ fn ArrayCaptures(T: type, pattern: anytype) type {
     if (real_len < pattern.len) @compileError("Array pattern is longer than the actual array");
     const ChildT = T_info.Array.child;
     const subslice_len = real_len - pattern.len + 1;
+    // TODO: the position of things in out do not matter so all of this could be one block
     // .{ thing1, thing2, ... }
     if (@TypeOf(pattern[pattern.len - 1]) == SubSliceMatcherType) {
         for (out_types[0 .. pattern.len - 1], 0..) |*out, i| {
@@ -229,6 +265,29 @@ fn ArrayCaptures(T: type, pattern: anytype) type {
         }
     }
 
+    return FlattenStructs(&out_types);
+}
+
+fn SliceCaptures(T: type, pattern: anytype) type {
+    const pattern_info = @typeInfo(@TypeOf(pattern));
+    if (pattern_info != .Struct) @compileError(std.fmt.comptimePrint("Matching against slices expects tuple type for pattern, found {}", .{@TypeOf(pattern)}));
+    if (!pattern_info.Struct.is_tuple) @compileError("Expected a tuple type when matching against slices");
+    const T_info = @typeInfo(T);
+    var out_types: [pattern.len]type = undefined;
+
+    const ChildT = T_info.Pointer.child;
+    var found_matcher = false;
+    var idx_of_matcher: ?usize = null;
+    for (&pattern, 0..) |pattern_field, i| {
+        if (@TypeOf(pattern_field) == SubSliceMatcherType) {
+            if(found_matcher) @compileError("Cannot have more than 1 subslice matcher matching against a slice");
+            idx_of_matcher = i;
+            found_matcher = true;
+        }
+    }
+    for (&out_types, 0..) |*out, i| {
+        out.* = if(i == idx_of_matcher) pattern[i](ChildT, null).captures else Captures(ChildT, pattern[i]);
+    }
     return FlattenStructs(&out_types);
 }
 
@@ -484,5 +543,26 @@ test "match: single pointers" {
     const res6 = m.arm(.{ .address = .{ .number = __, .street_num = 3, .duplex_is_first = __ }, .quality = __, .proof = bind("proof") });
     const res7 = m.arm(.{ .address = .{ .number = __, .street_num = 23339, .duplex_is_first = __ }, .quality = __, .proof = bind("proof") });
     try std.testing.expectEqual(1, res6.?.proof);
+    try std.testing.expectEqual(null, res7);
+}
+
+test "match: slices" {
+    const list: []const u8 = &.{ 0, 9, 100, 140 };
+    const m = comptime match(&list);
+    const res = m.arm(.{ 0, 9, 100, bind("num") });
+    const res2 = m.arm(.{ ref_rest("first2"), 100, 140 });
+    const res3 = m.arm(.{ bind("head"), ref_rest("tail") });
+    const res4 = m.arm(.{ 1, ref_rest("tail") });
+    const res5 = m.arm(.{ 0, ref_rest("middle"), 140 });
+    const res6 = m.arm(.{ 0, 9, bind("num") });
+    const res7 = m.arm(.{ 0, 9, 100, 140, bind("num")});
+
+    try std.testing.expectEqual(140, res.?.num);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 9 }, res2.?.first2);
+    try std.testing.expectEqual(0, res3.?.head);
+    try std.testing.expectEqualSlices(u8, &.{ 9, 100, 140 }, res3.?.tail);
+    try std.testing.expectEqual(null, res4);
+    try std.testing.expectEqualSlices(u8, &.{ 9, 100 }, res5.?.middle);
+    try std.testing.expectEqual(null, res6);
     try std.testing.expectEqual(null, res7);
 }
