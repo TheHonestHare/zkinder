@@ -128,7 +128,7 @@ fn tryBindSlice(val_slice: anytype, pattern: anytype, out_ptr: anytype) bool {
     // all invalid patterns should have been caught by SliceCaptures (such as .{ ..., thing2, ...}) but in the future analysis order might change, causing confusing errors here
     const real_len = val_slice.len;
     const ChildT = @typeInfo(@TypeOf(val_slice)).Pointer.child;
-    if(real_len < pattern.len) return false;
+    if (real_len < pattern.len) return false;
     const idx_of_matcher: ?usize = comptime for (&pattern, 0..) |pattern_field, i| {
         if (@TypeOf(pattern_field) == SubSliceMatcherType) break i;
     } else null;
@@ -151,7 +151,7 @@ fn tryBindSlice(val_slice: anytype, pattern: anytype, out_ptr: anytype) bool {
         }
         // case where theres no special SubArrayMatcher
     } else {
-        if(real_len != pattern.len) return false;
+        if (real_len != pattern.len) return false;
         inline for (pattern, 0..) |pattern_field, i| {
             if (!tryBind(&val_slice[i], pattern_field, out_ptr)) return false;
         }
@@ -280,13 +280,13 @@ fn SliceCaptures(T: type, pattern: anytype) type {
     var idx_of_matcher: ?usize = null;
     for (&pattern, 0..) |pattern_field, i| {
         if (@TypeOf(pattern_field) == SubSliceMatcherType) {
-            if(found_matcher) @compileError("Cannot have more than 1 subslice matcher matching against a slice");
+            if (found_matcher) @compileError("Cannot have more than 1 subslice matcher matching against a slice");
             idx_of_matcher = i;
             found_matcher = true;
         }
     }
     for (&out_types, 0..) |*out, i| {
-        out.* = if(i == idx_of_matcher) pattern[i](ChildT, null).captures else Captures(ChildT, pattern[i]);
+        out.* = if (i == idx_of_matcher) pattern[i](ChildT, null).captures else Captures(ChildT, pattern[i]);
     }
     return FlattenStructs(&out_types);
 }
@@ -372,7 +372,7 @@ pub fn ref_rest(name: [:0]const u8) SubSliceMatcherType {
     return struct {
         // TODO: should arrays be captured by value or as a slice? (currently I do it by value)
         pub fn f(comptime ChildT: type, comptime length: ?usize) SubSliceMatcher {
-            const FieldType = if(length) |len| *const [len]ChildT else []const ChildT;
+            const FieldType = if (length) |len| *const [len]ChildT else []const ChildT;
             const capture_field: std.builtin.Type.StructField = .{
                 .name = name,
                 .is_comptime = false,
@@ -392,6 +392,17 @@ pub fn ref_rest(name: [:0]const u8) SubSliceMatcherType {
             };
         }
     }.f;
+}
+
+pub fn ignore_rest(_: type, _: ?usize) SubSliceMatcher {
+    return .{
+        .captures = struct {},
+        .tryBind = struct {
+            pub fn f(_: SubSliceMatcher, _: anytype, _: anytype) bool {
+                return true;
+            }
+        }.f,
+    };
 }
 
 /// flattens an array of struct types into 1 struct type
@@ -555,7 +566,7 @@ test "match: slices" {
     const res4 = m.arm(.{ 1, ref_rest("tail") });
     const res5 = m.arm(.{ 0, ref_rest("middle"), 140 });
     const res6 = m.arm(.{ 0, 9, bind("num") });
-    const res7 = m.arm(.{ 0, 9, 100, 140, bind("num")});
+    const res7 = m.arm(.{ 0, 9, 100, 140, bind("num") });
 
     try std.testing.expectEqual(140, res.?.num);
     try std.testing.expectEqualSlices(u8, &.{ 0, 9 }, res2.?.first2);
