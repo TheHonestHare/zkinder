@@ -92,9 +92,11 @@ fn tryBindArray(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
     // all invalid patterns should have been caught by ArrayCaptures (such as .{ ..., thing2, ...}) but in the future analysis order might change, causing confusing errors here
     const ValType = @typeInfo(@TypeOf(val_ptr)).Pointer.child;
     const real_len = @typeInfo(@TypeOf(val_ptr.*)).Array.len;
+    const ChildT = @typeInfo(ValType).Array.child;
+    const subslice_len = real_len - pattern.len + 1;
     if (real_len < pattern.len) @compileError("Array pattern is longer than the actual array");
     const idx_of_matcher: ?usize = comptime for (&pattern, 0..) |pattern_field, i| {
-        if (@TypeOf(pattern_field) == SubArrayMatcherType) break i;
+        if (@TypeOf(pattern_field) == SubSliceMatcherType) break i;
     } else null;
     // case where there is a special SubArrayMatcher somewhere
     if (idx_of_matcher) |idx_of_matcher_| {
@@ -107,7 +109,7 @@ fn tryBindArray(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
             if (!tryBind(&val_ptr[i], pattern[i], out_ptr)) return false;
         }
         // middle
-        const custom_matcher = pattern[idx_of_matcher_](ValType);
+        const custom_matcher = pattern[idx_of_matcher_](ChildT, subslice_len);
         if (!custom_matcher.tryBind(custom_matcher, val_ptr[start_subarray..end_subarray], out_ptr)) return false;
         //end
         inline for (idx_of_matcher_ + 1.., end_subarray..real_len) |pattern_i, i| {
@@ -185,45 +187,40 @@ fn ArrayCaptures(T: type, pattern: anytype) type {
     const T_info = @typeInfo(T);
     var out_types: [pattern.len]type = undefined;
 
-    if (@TypeOf(pattern[0]) == SubArrayMatcherType and @TypeOf(pattern[pattern.len - 1]) == SubArrayMatcherType) {
-        @compileError("subarray matchers cannot be at both the start and the end of the pattern");
+    if (@TypeOf(pattern[0]) == SubSliceMatcherType and @TypeOf(pattern[pattern.len - 1]) == SubSliceMatcherType) {
+        @compileError("subslice matchers cannot be at both the start and the end of the pattern");
     }
 
     const real_len = @typeInfo(T).Array.len;
     if (real_len < pattern.len) @compileError("Array pattern is longer than the actual array");
-    const SubArrayType = @Type(.{
-        .Array = .{
-            .child = T_info.Array.child,
-            .len = real_len - pattern.len + 1,
-            .sentinel = T_info.Array.sentinel,
-        },
-    });
+    const ChildT = T_info.Array.child;
+    const subslice_len = real_len - pattern.len + 1;
     // .{ thing1, thing2, ... }
-    if (@TypeOf(pattern[pattern.len - 1]) == SubArrayMatcherType) {
+    if (@TypeOf(pattern[pattern.len - 1]) == SubSliceMatcherType) {
         for (out_types[0 .. pattern.len - 1], 0..) |*out, i| {
-            if (@TypeOf(pattern[i]) == SubArrayMatcherType) @compileError("Cannot have a subarray matcher at both the middle and end of a pattern");
-            out.* = Captures(T_info.Array.child, pattern[i]);
+            if (@TypeOf(pattern[i]) == SubSliceMatcherType) @compileError("Cannot have a subslice matcher at both the middle and end of a pattern");
+            out.* = Captures(ChildT, pattern[i]);
         }
-        out_types[pattern.len - 1] = pattern[pattern.len - 1](SubArrayType).captures;
+        out_types[pattern.len - 1] = pattern[pattern.len - 1](ChildT, subslice_len).captures;
         // .{ ..., thing3, thing4 }
-    } else if (@TypeOf(pattern[0]) == SubArrayMatcherType) {
-        out_types[0] = pattern[0](SubArrayType).captures;
+    } else if (@TypeOf(pattern[0]) == SubSliceMatcherType) {
+        out_types[0] = pattern[0](ChildT, subslice_len).captures;
         for (out_types[1..pattern.len], 1..) |*out, i| {
-            if (@TypeOf(pattern[i]) == SubArrayMatcherType) @compileError("Cannot have a subarray matcher at both the start and middle of a pattern");
-            out.* = Captures(T_info.Array.child, pattern[i]);
+            if (@TypeOf(pattern[i]) == SubSliceMatcherType) @compileError("Cannot have a subslice matcher at both the start and middle of a pattern");
+            out.* = Captures(ChildT, pattern[i]);
         }
     } else {
         for (&out_types, 0..) |*out, i| {
             // .{ thing1, thing2, thing3, thing4 }
-            if (@TypeOf(pattern[i]) != SubArrayMatcherType) {
-                out.* = Captures(T_info.Array.child, pattern[i]);
+            if (@TypeOf(pattern[i]) != SubSliceMatcherType) {
+                out.* = Captures(ChildT, pattern[i]);
                 continue;
             }
             // .{ thing1, ..., thing4 }
-            out_types[i] = pattern[i](SubArrayType).captures;
+            out_types[i] = pattern[i](ChildT, subslice_len).captures;
             for (out_types[i + 1 ..], i + 1..) |*out_, i_| {
-                if (@TypeOf(pattern[i_]) == SubArrayMatcherType) @compileError("Cannot have 2 subarray matchers in a pattern");
-                out_.* = Captures(T_info.Array.child, pattern[i_]);
+                if (@TypeOf(pattern[i_]) == SubSliceMatcherType) @compileError("Cannot have 2 subarray matchers in a pattern");
+                out_.* = Captures(ChildT, pattern[i_]);
             }
             break;
             // the loop finished successfully, meaning no subarray matchers were found
@@ -251,11 +248,12 @@ pub const Matcher = struct {
     tryBind: fn (self: Matcher, val_ptr: anytype, out_ptr: anytype) bool,
 };
 
-pub const SubArrayMatcherType = fn (comptime type) SubArrayMatcher;
+/// receives the child type and subslice length (or null if its runtime known)
+pub const SubSliceMatcherType = fn (comptime type, comptime ?usize) SubSliceMatcher;
 
-pub const SubArrayMatcher = struct {
+pub const SubSliceMatcher = struct {
     captures: type,
-    tryBind: fn (self: SubArrayMatcher, subarray: anytype, out_ptr: anytype) bool,
+    tryBind: fn (self: SubSliceMatcher, subslice: anytype, out_ptr: anytype) bool,
 };
 
 /// binds a fields value to the name, to be accessed in the out of the arm
@@ -303,23 +301,25 @@ pub fn __(_: type) Matcher {
     };
 }
 
-pub fn bindrest(name: [:0]const u8) SubArrayMatcherType {
+/// binds a ptr to the rest of an array or slice pattern to `name`
+pub fn ref_rest(name: [:0]const u8) SubSliceMatcherType {
     const try_bind_fn = struct {
-        pub fn f(self: SubArrayMatcher, subarray: anytype, out_ptr: anytype) bool {
+        pub fn f(self: SubSliceMatcher, subslice_ptr: anytype, out_ptr: anytype) bool {
             const fields = @typeInfo(self.captures).Struct.fields;
-            @field(out_ptr, fields[0].name) = subarray.*;
+            @field(out_ptr, fields[0].name) = subslice_ptr;
             return true;
         }
     }.f;
     return struct {
         // TODO: should arrays be captured by value or as a slice? (currently I do it by value)
-        pub fn f(comptime T: type) SubArrayMatcher {
+        pub fn f(comptime ChildT: type, comptime length: ?usize) SubSliceMatcher {
+            const FieldType = if(length) |len| *const [len]ChildT else []const ChildT;
             const capture_field: std.builtin.Type.StructField = .{
                 .name = name,
                 .is_comptime = false,
                 .default_value = null,
-                .alignment = @alignOf(T),
-                .type = T,
+                .alignment = @alignOf(FieldType),
+                .type = FieldType,
             };
             const capture_type = @Type(.{ .Struct = .{
                 .layout = .auto,
@@ -435,19 +435,17 @@ test "match: arrays" {
     const list = [_]u8{ 0, 9, 100, 140 };
     const m = comptime match(&list);
     const res = m.arm(.{ 0, 9, 100, bind("num") });
-    const res2 = m.arm(.{ bindrest("first2"), 100, 140 });
-    const res3 = m.arm(.{ bind("head"), bindrest("tail") });
-    const res4 = m.arm(.{ 1, bindrest("tail") });
-    const res5 = m.arm(.{ 0, bindrest("middle"), 140 });
+    const res2 = m.arm(.{ ref_rest("first2"), 100, 140 });
+    const res3 = m.arm(.{ bind("head"), ref_rest("tail") });
+    const res4 = m.arm(.{ 1, ref_rest("tail") });
+    const res5 = m.arm(.{ 0, ref_rest("middle"), 140 });
 
     try std.testing.expectEqual(140, res.?.num);
-    try std.testing.expectEqualSlices(u8, &.{ 0, 9 }, &res2.?.first2);
-    {
-        try std.testing.expectEqual(0, res3.?.head);
-        try std.testing.expectEqualSlices(u8, &.{ 9, 100, 140 }, &res3.?.tail);
-    }
+    try std.testing.expectEqualSlices(u8, &.{ 0, 9 }, res2.?.first2);
+    try std.testing.expectEqual(0, res3.?.head);
+    try std.testing.expectEqualSlices(u8, &.{ 9, 100, 140 }, res3.?.tail);
     try std.testing.expectEqual(null, res4);
-    try std.testing.expectEqualSlices(u8, &.{ 9, 100 }, &res5.?.middle);
+    try std.testing.expectEqualSlices(u8, &.{ 9, 100 }, res5.?.middle);
 }
 
 test "match: single pointers" {
