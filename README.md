@@ -39,7 +39,7 @@ try std.testing.expectEqual(20, res4.?.y);
   - ints, floats, bools (TODO: more testing)
   - optionals (TODO: more testing)
   - arrays
-    - can even match on a subarray using `bindrest` (see test "match: arrays")
+    - can even match on a subarray using `ref_rest` (see test "match: arrays")
   - single item pointers (patterns match on the child type)
   - slices
     - support same features as arrays, plus different length patterns
