@@ -45,6 +45,8 @@ try std.testing.expectEqual(20, res4.?.y);
     - support same features as arrays, plus different length patterns
 - extracting values out via `bind`
 - matching aginst anything via `__`
+- matching on integer ranges via `range`
+- extracting values out only if it matches a predicate with `bind_if`
 - support for creating your own match predicates
   - both `bind` and `__` use no special casing, you could implement yourself
   - any custom matcher must be of type `fn (comptime type) CustomMatcher`
@@ -55,6 +57,6 @@ try std.testing.expectEqual(20, res4.?.y);
 - optimize this so its not just willy nilly checking basically
 - exhaustive patterns (hardmode)
 - unreachable pattern errors (if I feel like it)
-- more helper match predicates such as `partial`, `bindif`, `ref`, `range`
+- more helper match predicates such as `partial`, `ref`,
 - safety check for ensuring a match only ever matches on one branch
   - a new `matchMultiple` will basically act as how match is right now, as basically allowing `if let` from Rust

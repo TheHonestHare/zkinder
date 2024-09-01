@@ -298,6 +298,32 @@ fn validateStructPattern(pattern: anytype) void {
     if (pattern_info.Struct.is_tuple) @compileError("Found tuple type when pattern matching against struct, must use a struct with the field names");
 }
 
+/// given a type, returns the type that normal pattern matching would allow you to match against (eg ?**u32 => u32)
+pub fn unwrappedType(T: type) type {
+    return switch(@typeInfo(T)) {
+        .Optional => |load| unwrappedType(load.child),
+        .Pointer => |load| switch(load.size) {
+            .One => unwrappedType(load.child),
+            .Slice => T,
+            .Many, .C => T, // TODO: compile error: shouldn't be reached bc this should only be called in custom matchers
+        },
+        else => T, // TODO: compile error: shouldn't be reached bc this should only be called in custom matchers
+    };
+}
+
+// TODO: make this guaranteed inline
+pub fn unwrapValue(val: anytype) ?unwrappedType(@TypeOf(val)) {
+    return switch(@typeInfo(@TypeOf(val))) {
+        .Optional => unwrapValue(val orelse return null),
+        .Pointer => |load| switch(load.size) {
+            .One => unwrapValue(val.*),
+            .Slice => val,
+            .Many, .C => val, // TODO: compile error: shouldn't be reached bc this should only be called in custom matchers
+        },
+        else => val, // TODO: compile error for certain fields
+    };
+}
+
 pub const MatcherType = fn (comptime type) Matcher;
 
 pub const Matcher = struct {
@@ -317,16 +343,16 @@ pub const SubSliceMatcher = struct {
 
 /// binds a fields value to the name, to be accessed in the out of the arm
 pub fn bind(name: [:0]const u8) MatcherType {
-    const try_bind_fn = struct {
-        pub fn f(self: Matcher, val_ptr: anytype, out_ptr: anytype) bool {
-            const fields = @typeInfo(self.captures).Struct.fields;
-            @field(out_ptr, fields[0].name) = val_ptr.*;
-            return true;
-        }
-    }.f;
+    return bind_if(name, __);
+}
+
+// TODO: test this
+/// binds a fields value to the name if the custom matcher past in returns true, to be accessed in the out of the arm
+pub fn bind_if(name: [:0]const u8, predicate: MatcherType) MatcherType {
     return struct {
         /// TODO: maybe have to pass in alignment?
         pub fn f(comptime T: type) Matcher {
+            
             const capture_field: std.builtin.Type.StructField = .{
                 .name = name,
                 .is_comptime = false,
@@ -341,8 +367,18 @@ pub fn bind(name: [:0]const u8) MatcherType {
                 .decls = &.{},
             } });
             return .{
-                .captures = capture_type,
-                .tryBind = try_bind_fn,
+                .captures = FlattenStructs(&.{
+                    predicate(T).captures,
+                    capture_type,
+                }),
+                .tryBind = struct {
+                    pub fn f(self: Matcher, val_ptr: anytype, out_ptr: anytype) bool {
+                        const fields = @typeInfo(self.captures).Struct.fields;
+                        @field(out_ptr, fields[0].name) = val_ptr.*;
+                        const pred = predicate(T);
+                        return pred.tryBind(pred, val_ptr, out_ptr);
+                    }
+                }.f,
             };
         }
     }.f;
@@ -358,6 +394,40 @@ pub fn __(_: type) Matcher {
             }
         }.f,
     };
+}
+
+pub const RangeMode = enum {
+    /// exclusive, exclusive (probably don't use this)
+    ee,
+    /// exclusive, incluisive (probably don't use this)
+    ei,
+    /// inclusive, exclusive
+    ie,
+    /// inclusive, inclusive
+    ii,
+};
+
+pub fn range(range_mode: RangeMode, start: comptime_int, end: comptime_int) MatcherType {
+    return struct {
+        pub fn f(comptime T: type) Matcher {
+            if(@typeInfo(unwrappedType(T)) != .Int) @compileError("range matcher only works on integers");
+            return .{
+                .captures = struct {},
+                .tryBind = struct {
+                    pub fn f(_: Matcher, val_ptr: anytype, _: anytype) bool {
+                        const val = unwrapValue(val_ptr.*) orelse return false;
+                        return switch(range_mode) {
+                            .ee, .ei => val > start,
+                            .ie, .ii => val >= start,
+                        } and switch(range_mode) {
+                            .ee, .ie => val < end,
+                            .ei, .ii => val <= end,
+                        };
+                    }
+                }.f,
+            };
+        }
+    }.f;
 }
 
 /// binds a ptr to the rest of an array or slice pattern to `name`
@@ -394,6 +464,8 @@ pub fn ref_rest(name: [:0]const u8) SubSliceMatcherType {
     }.f;
 }
 
+// TODO: test this
+/// ignores the corresponding subslice in an array/slice pattern (i.e. it always matches)
 pub fn ignore_rest(_: type, _: ?usize) SubSliceMatcher {
     return .{
         .captures = struct {},
@@ -406,7 +478,7 @@ pub fn ignore_rest(_: type, _: ?usize) SubSliceMatcher {
 }
 
 /// flattens an array of struct types into 1 struct type
-fn FlattenStructs(types: []type) type {
+fn FlattenStructs(types: []const type) type {
     var acc: comptime_int = 0;
     for (types) |type_| acc += @typeInfo(type_).Struct.fields.len;
 
@@ -576,4 +648,29 @@ test "match: slices" {
     try std.testing.expectEqualSlices(u8, &.{ 9, 100 }, res5.?.middle);
     try std.testing.expectEqual(null, res6);
     try std.testing.expectEqual(null, res7);
+}
+
+test range {
+    const val: u32 = 299;
+    const m = comptime match(&val);
+    const res = m.arm(range(.ie, 0, 299));
+    const res2 = m.arm(bind_if("proof", range(.ii, 0, 299)));
+    const res3 = m.arm(range(.ee, 299, 100_000));
+    const res4 = m.arm(bind_if("proof", range(.ie, 299, 100_000)));
+    try std.testing.expectEqual(null, res);
+    try std.testing.expectEqual(299, res2.?.proof);
+    try std.testing.expectEqual(null, res3);
+    try std.testing.expectEqual(299, res4.?.proof);
+
+    const val_wrapped: *const ?*const u32 = &&val;
+    const m2 = comptime match(&val_wrapped);
+    const res5 = m2.arm(range(.ie, 0, 299));
+    const res6 = m2.arm(bind_if("proof", range(.ii, 0, 299)));
+    const res7 = m2.arm(range(.ee, 299, 100_000));
+    const res8 = m2.arm(bind_if("proof", range(.ie, 299, 100_000)));
+
+    try std.testing.expectEqual(null, res5);
+    try std.testing.expectEqual(299, res6.?.proof.*.?.*);
+    try std.testing.expectEqual(null, res7);
+    try std.testing.expectEqual(299, res8.?.proof.*.?.*);
 }
