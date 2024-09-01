@@ -8,7 +8,7 @@ pub fn match(thing: anytype) ArmMatcher(PointerChildOfSingle(@TypeOf(thing))) {
 
 pub fn PointerChildOfSingle(T: type) type {
     return switch (@typeInfo(T)) {
-        .Pointer => |ptrinfo| switch (ptrinfo.size) {
+        .pointer => |ptrinfo| switch (ptrinfo.size) {
             .One => ptrinfo.child,
             .Many, .Slice, .C => @compileError("Thing passed into match must be single item pointer"),
         },
@@ -31,19 +31,19 @@ pub fn ArmMatcher(T_: type) type {
 }
 
 fn tryBind(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
-    const ValType = @typeInfo(@TypeOf(val_ptr)).Pointer.child;
+    const ValType = @typeInfo(@TypeOf(val_ptr)).pointer.child;
     if (@TypeOf(pattern) == MatcherType) {
         const custom_matcher = pattern(ValType);
         return custom_matcher.tryBind(custom_matcher, val_ptr, out_ptr);
     }
     return switch (@typeInfo(ValType)) {
-        .Struct => tryBindStruct(val_ptr, pattern, out_ptr),
-        .Union => tryBindUnion(val_ptr, pattern, out_ptr),
-        .Optional => tryBindOptional(val_ptr, pattern, out_ptr),
-        .Array => tryBindArray(val_ptr, pattern, out_ptr),
+        .@"struct" => tryBindStruct(val_ptr, pattern, out_ptr),
+        .@"union" => tryBindUnion(val_ptr, pattern, out_ptr),
+        .optional => tryBindOptional(val_ptr, pattern, out_ptr),
+        .array => tryBindArray(val_ptr, pattern, out_ptr),
         // TODO: add additional features for matching on scalars
-        .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => pattern == val_ptr.*,
-        .Pointer => |payload| switch (payload.size) {
+        .int, .comptime_int, .bool, .float, .comptime_float, .@"enum" => pattern == val_ptr.*,
+        .pointer => |payload| switch (payload.size) {
             .One => tryBind(val_ptr.*, pattern, out_ptr),
             .Slice => tryBindSlice(val_ptr.*, pattern, out_ptr),
             // already compile errors in PointerCaptures
@@ -55,16 +55,16 @@ fn tryBind(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
 }
 
 fn tryBindStruct(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
-    const ValType = @typeInfo(@TypeOf(val_ptr)).Pointer.child;
-    inline for (@typeInfo(ValType).Struct.fields) |field| {
+    const ValType = @typeInfo(@TypeOf(val_ptr)).pointer.child;
+    inline for (@typeInfo(ValType).@"struct".fields) |field| {
         if (!tryBind(&@field(val_ptr, field.name), @field(pattern, field.name), out_ptr)) return false;
     }
     return true;
 }
 
 fn tryBindUnion(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
-    const TagEnum = @typeInfo(@TypeOf(val_ptr.*)).Union.tag_type orelse @compileError("matching on a union requires a tag type");
-    const variant_name = @typeInfo(@TypeOf(pattern)).Struct.fields[0].name;
+    const TagEnum = @typeInfo(@TypeOf(val_ptr.*)).@"union".tag_type orelse @compileError("matching on a union requires a tag type");
+    const variant_name = @typeInfo(@TypeOf(pattern)).@"struct".fields[0].name;
     // TODO: this might be inefficient
     if (std.meta.activeTag(val_ptr.*) != @field(TagEnum, variant_name)) return false;
     return tryBind(&@field(val_ptr, variant_name), @field(pattern, variant_name), out_ptr);
@@ -75,9 +75,9 @@ fn tryBindOptional(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
     if (val_ptr.* == null) return @TypeOf(pattern) == @TypeOf(null);
 
     const NewValPtrType = comptime blk: {
-        const ChildValType = @typeInfo(@TypeOf(val_ptr.*)).Optional.child;
+        const ChildValType = @typeInfo(@TypeOf(val_ptr.*)).optional.child;
         var typeinfo = @typeInfo(@TypeOf(val_ptr));
-        typeinfo.Pointer.child = ChildValType;
+        typeinfo.pointer.child = ChildValType;
         break :blk @Type(typeinfo);
     };
     return tryBind(@as(NewValPtrType, @ptrCast(val_ptr)), pattern, out_ptr);
@@ -90,9 +90,9 @@ fn tryBindSinglePointer(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bo
 
 fn tryBindArray(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
     // all invalid patterns should have been caught by ArrayCaptures (such as .{ ..., thing2, ...}) but in the future analysis order might change, causing confusing errors here
-    const ValType = @typeInfo(@TypeOf(val_ptr)).Pointer.child;
-    const real_len = @typeInfo(@TypeOf(val_ptr.*)).Array.len;
-    const ChildT = @typeInfo(ValType).Array.child;
+    const ValType = @typeInfo(@TypeOf(val_ptr)).pointer.child;
+    const real_len = @typeInfo(@TypeOf(val_ptr.*)).array.len;
+    const ChildT = @typeInfo(ValType).array.child;
     const subslice_len = real_len - pattern.len + 1;
     if (real_len < pattern.len) @compileError("Array pattern is longer than the actual array");
     const idx_of_matcher: ?usize = comptime for (&pattern, 0..) |pattern_field, i| {
@@ -127,7 +127,7 @@ fn tryBindArray(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
 fn tryBindSlice(val_slice: anytype, pattern: anytype, out_ptr: anytype) bool {
     // all invalid patterns should have been caught by SliceCaptures (such as .{ ..., thing2, ...}) but in the future analysis order might change, causing confusing errors here
     const real_len = val_slice.len;
-    const ChildT = @typeInfo(@TypeOf(val_slice)).Pointer.child;
+    const ChildT = @typeInfo(@TypeOf(val_slice)).pointer.child;
     if (real_len < pattern.len) return false;
     const idx_of_matcher: ?usize = comptime for (&pattern, 0..) |pattern_field, i| {
         if (@TypeOf(pattern_field) == SubSliceMatcherType) break i;
@@ -162,12 +162,12 @@ fn tryBindSlice(val_slice: anytype, pattern: anytype, out_ptr: anytype) bool {
 fn Captures(T: type, pattern: anytype) type {
     if (@TypeOf(pattern) == MatcherType) return pattern(T).captures;
     return switch (@typeInfo(T)) {
-        .Struct => StructCaptures(T, pattern),
-        .Union => UnionCaptures(T, pattern),
-        .Optional => OptionalCaptures(T, pattern),
-        .Array => ArrayCaptures(T, pattern),
-        .Int, .ComptimeInt, .Bool, .Float, .ComptimeFloat, .Enum => struct {},
-        .Pointer => PointerCaptures(T, pattern),
+        .@"struct" => StructCaptures(T, pattern),
+        .@"union" => UnionCaptures(T, pattern),
+        .optional => OptionalCaptures(T, pattern),
+        .array => ArrayCaptures(T, pattern),
+        .int, .comptime_int, .bool, .float, .comptime_float, .@"enum" => struct {},
+        .pointer => PointerCaptures(T, pattern),
         // TODO: implement other types
         else => {
             @compileLog(T, pattern);
@@ -179,10 +179,10 @@ fn Captures(T: type, pattern: anytype) type {
 /// assumes T is a struct type
 fn StructCaptures(T: type, pattern: anytype) type {
     validateStructPattern(pattern);
-    const pattern_info = @typeInfo(@TypeOf(pattern)).Struct;
-    if (@typeInfo(T).Struct.fields.len != pattern_info.fields.len) @compileError(std.fmt.comptimePrint(
+    const pattern_info = @typeInfo(@TypeOf(pattern)).@"struct";
+    if (@typeInfo(T).@"struct".fields.len != pattern_info.fields.len) @compileError(std.fmt.comptimePrint(
         \\ Found {d} fields in the pattern. Expected {d} in the match type. Use the __ function to always match
-    , .{ pattern_info.fields.len, @typeInfo(T).Struct.fields.len }));
+    , .{ pattern_info.fields.len, @typeInfo(T).@"struct".fields.len }));
     var out_types: [pattern_info.fields.len]type = undefined;
     for (&out_types, pattern_info.fields) |*out, fieldinfo| {
         if (!@hasField(T, fieldinfo.name)) @compileError(std.fmt.comptimePrint("Field name \"{s}\" in pattern does not exist in match type", .{fieldinfo.name}));
@@ -193,7 +193,7 @@ fn StructCaptures(T: type, pattern: anytype) type {
 
 fn UnionCaptures(T: type, pattern: anytype) type {
     validateStructPattern(pattern);
-    const pattern_info = @typeInfo(@TypeOf(pattern)).Struct;
+    const pattern_info = @typeInfo(@TypeOf(pattern)).@"struct";
     if (pattern_info.fields.len > 1) @compileError("Pattern contains multiple variants of the same union for matching, use oneof for this purpose");
     const variant_name = pattern_info.fields[0].name;
     return Captures(@TypeOf(@field(@as(T, undefined), variant_name)), @field(pattern, variant_name));
@@ -202,12 +202,12 @@ fn UnionCaptures(T: type, pattern: anytype) type {
 fn OptionalCaptures(T: type, pattern: anytype) type {
     if (@TypeOf(pattern) == @TypeOf(null)) return struct {};
 
-    return Captures(@typeInfo(T).Optional.child, pattern);
+    return Captures(@typeInfo(T).optional.child, pattern);
 }
 
 // TODO: maybe disallow double pointer captures (status quo is just deref them all bc thats easiest)
 fn PointerCaptures(T: type, pattern: anytype) type {
-    const T_info = @typeInfo(T).Pointer;
+    const T_info = @typeInfo(T).pointer;
     return switch (T_info.size) {
         .One => Captures(T_info.child, pattern),
         .Slice => SliceCaptures(T, pattern),
@@ -217,8 +217,8 @@ fn PointerCaptures(T: type, pattern: anytype) type {
 
 fn ArrayCaptures(T: type, pattern: anytype) type {
     const pattern_info = @typeInfo(@TypeOf(pattern));
-    if (pattern_info != .Struct) @compileError(std.fmt.comptimePrint("Matching against arrays expects tuple type for pattern, found {}", .{@TypeOf(pattern)}));
-    if (!pattern_info.Struct.is_tuple) @compileError("Expected a tuple type when matching against arrays");
+    if (pattern_info != .@"struct") @compileError(std.fmt.comptimePrint("Matching against arrays expects tuple type for pattern, found {}", .{@TypeOf(pattern)}));
+    if (!pattern_info.@"struct".is_tuple) @compileError("Expected a tuple type when matching against arrays");
     const T_info = @typeInfo(T);
     var out_types: [pattern.len]type = undefined;
 
@@ -226,9 +226,9 @@ fn ArrayCaptures(T: type, pattern: anytype) type {
         @compileError("subslice matchers cannot be at both the start and the end of the pattern");
     }
 
-    const real_len = @typeInfo(T).Array.len;
+    const real_len = @typeInfo(T).array.len;
     if (real_len < pattern.len) @compileError("Array pattern is longer than the actual array");
-    const ChildT = T_info.Array.child;
+    const ChildT = T_info.array.child;
     const subslice_len = real_len - pattern.len + 1;
     // TODO: the position of things in out do not matter so all of this could be one block
     // .{ thing1, thing2, ... }
@@ -261,7 +261,7 @@ fn ArrayCaptures(T: type, pattern: anytype) type {
             break;
             // the loop finished successfully, meaning no subarray matchers were found
         } else {
-            if (T_info.Array.len != pattern.len) @compileError("Array pattern without subarray matcher is not the same size as the actual array");
+            if (T_info.array.len != pattern.len) @compileError("Array pattern without subarray matcher is not the same size as the actual array");
         }
     }
 
@@ -270,12 +270,12 @@ fn ArrayCaptures(T: type, pattern: anytype) type {
 
 fn SliceCaptures(T: type, pattern: anytype) type {
     const pattern_info = @typeInfo(@TypeOf(pattern));
-    if (pattern_info != .Struct) @compileError(std.fmt.comptimePrint("Matching against slices expects tuple type for pattern, found {}", .{@TypeOf(pattern)}));
-    if (!pattern_info.Struct.is_tuple) @compileError("Expected a tuple type when matching against slices");
+    if (pattern_info != .@"struct") @compileError(std.fmt.comptimePrint("Matching against slices expects tuple type for pattern, found {}", .{@TypeOf(pattern)}));
+    if (!pattern_info.@"struct".is_tuple) @compileError("Expected a tuple type when matching against slices");
     const T_info = @typeInfo(T);
     var out_types: [pattern.len]type = undefined;
 
-    const ChildT = T_info.Pointer.child;
+    const ChildT = T_info.pointer.child;
     var found_matcher = false;
     var idx_of_matcher: ?usize = null;
     for (&pattern, 0..) |pattern_field, i| {
@@ -294,15 +294,15 @@ fn SliceCaptures(T: type, pattern: anytype) type {
 /// asserts that a pattern is of struct type and not a tuple
 fn validateStructPattern(pattern: anytype) void {
     const pattern_info = @typeInfo(@TypeOf(pattern));
-    if (pattern_info != .Struct) @compileError(std.fmt.comptimePrint("Expected a struct type for pattern, found: {}", .{@TypeOf(pattern)}));
-    if (pattern_info.Struct.is_tuple) @compileError("Found tuple type when pattern matching against struct, must use a struct with the field names");
+    if (pattern_info != .@"struct") @compileError(std.fmt.comptimePrint("Expected a struct type for pattern, found: {}", .{@TypeOf(pattern)}));
+    if (pattern_info.@"struct".is_tuple) @compileError("Found tuple type when pattern matching against struct, must use a struct with the field names");
 }
 
 /// given a type, returns the type that normal pattern matching would allow you to match against (eg ?**u32 => u32)
 pub fn unwrappedType(T: type) type {
     return switch(@typeInfo(T)) {
-        .Optional => |load| unwrappedType(load.child),
-        .Pointer => |load| switch(load.size) {
+        .optional => |load| unwrappedType(load.child),
+        .pointer => |load| switch(load.size) {
             .One => unwrappedType(load.child),
             .Slice => T,
             .Many, .C => T, // TODO: compile error: shouldn't be reached bc this should only be called in custom matchers
@@ -314,8 +314,8 @@ pub fn unwrappedType(T: type) type {
 // TODO: make this guaranteed inline
 pub fn unwrapValue(val: anytype) ?unwrappedType(@TypeOf(val)) {
     return switch(@typeInfo(@TypeOf(val))) {
-        .Optional => unwrapValue(val orelse return null),
-        .Pointer => |load| switch(load.size) {
+        .optional => unwrapValue(val orelse return null),
+        .pointer => |load| switch(load.size) {
             .One => unwrapValue(val.*),
             .Slice => val,
             .Many, .C => val, // TODO: compile error: shouldn't be reached bc this should only be called in custom matchers
@@ -360,7 +360,7 @@ pub fn bind_if(name: [:0]const u8, predicate: MatcherType) MatcherType {
                 .alignment = @alignOf(T),
                 .type = T,
             };
-            const capture_type = @Type(.{ .Struct = .{
+            const capture_type = @Type(.{ .@"struct" = .{
                 .layout = .auto,
                 .is_tuple = false,
                 .fields = &.{capture_field},
@@ -373,7 +373,7 @@ pub fn bind_if(name: [:0]const u8, predicate: MatcherType) MatcherType {
                 }),
                 .tryBind = struct {
                     pub fn f(self: Matcher, val_ptr: anytype, out_ptr: anytype) bool {
-                        const fields = @typeInfo(self.captures).Struct.fields;
+                        const fields = @typeInfo(self.captures).@"struct".fields;
                         @field(out_ptr, fields[0].name) = val_ptr.*;
                         const pred = predicate(T);
                         return pred.tryBind(pred, val_ptr, out_ptr);
@@ -410,7 +410,7 @@ pub const RangeMode = enum {
 pub fn range(range_mode: RangeMode, start: comptime_int, end: comptime_int) MatcherType {
     return struct {
         pub fn f(comptime T: type) Matcher {
-            if(@typeInfo(unwrappedType(T)) != .Int) @compileError("range matcher only works on integers");
+            if(@typeInfo(unwrappedType(T)) != .int) @compileError("range matcher only works on integers");
             return .{
                 .captures = struct {},
                 .tryBind = struct {
@@ -434,7 +434,7 @@ pub fn range(range_mode: RangeMode, start: comptime_int, end: comptime_int) Matc
 pub fn ref_rest(name: [:0]const u8) SubSliceMatcherType {
     const try_bind_fn = struct {
         pub fn f(self: SubSliceMatcher, subslice_ptr: anytype, out_ptr: anytype) bool {
-            const fields = @typeInfo(self.captures).Struct.fields;
+            const fields = @typeInfo(self.captures).@"struct".fields;
             @field(out_ptr, fields[0].name) = subslice_ptr;
             return true;
         }
@@ -450,7 +450,7 @@ pub fn ref_rest(name: [:0]const u8) SubSliceMatcherType {
                 .alignment = @alignOf(FieldType),
                 .type = FieldType,
             };
-            const capture_type = @Type(.{ .Struct = .{
+            const capture_type = @Type(.{ .@"struct" = .{
                 .layout = .auto,
                 .is_tuple = false,
                 .fields = &.{capture_field},
@@ -480,17 +480,17 @@ pub fn ignore_rest(_: type, _: ?usize) SubSliceMatcher {
 /// flattens an array of struct types into 1 struct type
 fn FlattenStructs(types: []const type) type {
     var acc: comptime_int = 0;
-    for (types) |type_| acc += @typeInfo(type_).Struct.fields.len;
+    for (types) |type_| acc += @typeInfo(type_).@"struct".fields.len;
 
     var fields: [acc]std.builtin.Type.StructField = undefined;
     var i: comptime_int = 0;
     for (types) |type_| {
-        for (@typeInfo(type_).Struct.fields) |field| {
+        for (@typeInfo(type_).@"struct".fields) |field| {
             fields[i] = field;
             i += 1;
         }
     }
-    return @Type(.{ .Struct = .{
+    return @Type(.{ .@"struct" = .{
         .is_tuple = false,
         .layout = .auto,
         .decls = &.{},

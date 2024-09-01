@@ -1,4 +1,4 @@
-A library that implements pattern matching in fully userland zig
+A library that implements pattern matching in fully userland zig. Tested on zig version 0.14.0-dev.1391+e084c46ed but should probably work on master
 
 ## Code example
 ```zig
