@@ -1,9 +1,14 @@
 const std = @import("std");
 
-pub fn match(thing: anytype) ArmMatcher(PointerChildOfSingle(@TypeOf(thing))) {
+pub fn match(thing_ptr: anytype) ArmMatcher(PointerChildOfSingle(@TypeOf(thing_ptr))) {
     return .{
-        .thing_ptr = thing,
+        .thing_ptr = thing_ptr,
     };
+}
+
+/// helper for matching against one pattern only
+pub fn matching(thing_ptr: anytype, pattern: anytype) ?Captures(@typeInfo(@TypeOf(thing_ptr)).pointer.child, pattern) {
+    return match(thing_ptr).arm(pattern);
 }
 
 pub fn PointerChildOfSingle(T: type) type {

@@ -43,6 +43,7 @@ try std.testing.expectEqual(20, res4.?.y);
   - single item pointers (patterns match on the child type)
   - slices
     - support same features as arrays, plus different length patterns
+- `matching` for no exhaustive checking, single arm
 - extracting values out via `bind`
 - matching aginst anything via `__`
 - matching on integer ranges via `range`
@@ -59,7 +60,6 @@ try std.testing.expectEqual(20, res4.?.y);
 - unreachable pattern errors (if I feel like it)
 - more helper match predicates such as `partial`, `ref`,
 - safety check for ensuring a match only ever matches on one branch
-  - a new `matchMultiple` will basically act as how match is right now, as basically allowing `if let` from Rust
 
 ## Custom matchers:
 A custom matcher is any function of the form `fn (comptime type) Matcher`, where the input is the type it is being matched against. `bind(<name>)` and `__` are both custom matchers implementable you could just as easily implement
