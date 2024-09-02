@@ -38,6 +38,7 @@ try std.testing.expectEqual(20, res4.?.y);
   - enums (TODO: more testing)
   - ints, floats, bools (TODO: more testing)
   - optionals (TODO: more testing)
+    - match on double optionals using `nonnull`
   - arrays
     - can even match on a subarray using `ref_rest` (see "custom array matchers")
   - single item pointers (patterns match on the child type)

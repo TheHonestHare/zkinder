@@ -34,8 +34,9 @@ pub fn ArmMatcher(T_: type) type {
         }
     };
 }
-
-fn tryBind(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
+/// Given a pointer to a value, and a pattern, returns true if the value matches the pattern then writes to out_ptr the captures
+/// You can call this from custom matcher implementations
+pub fn tryBind(val_ptr: anytype, pattern: anytype, out_ptr: anytype) bool {
     const ValType = @typeInfo(@TypeOf(val_ptr)).pointer.child;
     if (@TypeOf(pattern) == MatcherType) {
         const custom_matcher = pattern(ValType);
@@ -163,8 +164,8 @@ fn tryBindSlice(val_slice: anytype, pattern: anytype, out_ptr: anytype) bool {
     }
     return true;
 }
-
-fn Captures(T: type, pattern: anytype) type {
+/// Given a pattern, returns the struct of captures it declares. You can call this from custom matcher code
+pub fn Captures(T: type, pattern: anytype) type {
     if (@TypeOf(pattern) == MatcherType) return pattern(T).captures;
     return switch (@typeInfo(T)) {
         .@"struct" => StructCaptures(T, pattern),
@@ -206,8 +207,9 @@ fn UnionCaptures(T: type, pattern: anytype) type {
 
 fn OptionalCaptures(T: type, pattern: anytype) type {
     if (@TypeOf(pattern) == @TypeOf(null)) return struct {};
-
-    return Captures(@typeInfo(T).optional.child, pattern);
+    const ChildT = @typeInfo(T).optional.child;
+    if(@typeInfo(ChildT) == .optional) @compileError("Double optionals are not allowed in default patterns. Please use nonnull to unwrap one layer");
+    return Captures(ChildT, pattern);
 }
 
 // TODO: maybe disallow double pointer captures (status quo is just deref them all bc thats easiest)
@@ -317,11 +319,17 @@ pub fn unwrappedType(T: type) type {
 }
 
 // TODO: make this guaranteed inline
-pub fn unwrapValue(val: anytype) ?unwrappedType(@TypeOf(val)) {
+pub inline fn unwrapValue(val: anytype) ?unwrappedType(@TypeOf(val)) {
+    return unwrapValueInner(@TypeOf(val), val, false);
+}
+pub inline fn unwrapValueInner(comptime T: type, val: T, comptime has_null_already: bool) ?unwrappedType(@TypeOf(val)) {
     return switch(@typeInfo(@TypeOf(val))) {
-        .optional => unwrapValue(val orelse return null),
+        .optional => |load| blk: {
+            if(has_null_already) @compileError("Cannot unwrap double optional");
+            break :blk unwrapValueInner(load.child, val orelse return null, true);
+        },
         .pointer => |load| switch(load.size) {
-            .One => unwrapValue(val.*),
+            .One => unwrapValueInner(load.child, val.*, has_null_already),
             .Slice => val,
             .Many, .C => val, // TODO: compile error: shouldn't be reached bc this should only be called in custom matchers
         },
@@ -401,6 +409,25 @@ pub fn __(_: type) Matcher {
     };
 }
 
+pub fn nonnull(comptime pattern: anytype) MatcherType {
+    return struct {
+        pub fn f(T: type) Matcher {
+            const T_info = @typeInfo(T);
+            if(T_info != .optional) @compileError("Cannot use nonnull on non optionals");
+            if(@typeInfo(T_info.optional.child) != .optional) @compileError("Do not use nonnull if you don't have a double optional. Normal pattern match syntax works fine");
+            return .{
+                .captures = Captures(T_info.optional.child, pattern),
+                .tryBind = struct {
+                    pub fn f(_: Matcher, val_ptr: anytype, out_ptr: anytype) bool {
+                        if(val_ptr.* == null) return false;
+                        return tryBind(&val_ptr.*.?, pattern, out_ptr);
+                    }
+                }.f,
+            };
+        }
+    }.f;
+}
+
 pub const RangeMode = enum {
     /// exclusive, exclusive (probably don't use this)
     ee,
@@ -412,6 +439,7 @@ pub const RangeMode = enum {
     ii,
 };
 
+// TODO: add docs, compile error for ranges not in bounds of the type
 pub fn range(range_mode: RangeMode, start: comptime_int, end: comptime_int) MatcherType {
     return struct {
         pub fn f(comptime T: type) Matcher {
@@ -645,6 +673,8 @@ test "match: slices" {
     const res6 = m.arm(.{ 0, 9, bind("num") });
     const res7 = m.arm(.{ 0, 9, 100, 140, bind("num") });
 
+    // TODO: test edge cases like zero length rest, too small pattern, etc
+
     try std.testing.expectEqual(140, res.?.num);
     try std.testing.expectEqualSlices(u8, &.{ 0, 9 }, res2.?.first2);
     try std.testing.expectEqual(0, res3.?.head);
@@ -657,7 +687,7 @@ test "match: slices" {
 
 test range {
     const val: u32 = 299;
-    const m = comptime match(&val);
+    const m = match(&val);
     const res = m.arm(range(.ie, 0, 299));
     const res2 = m.arm(bind_if("proof", range(.ii, 0, 299)));
     const res3 = m.arm(range(.ee, 299, 100_000));
@@ -678,4 +708,13 @@ test range {
     try std.testing.expectEqual(299, res6.?.proof.*.?.*);
     try std.testing.expectEqual(null, res7);
     try std.testing.expectEqual(299, res8.?.proof.*.?.*);
+}
+
+// TODO: more rigorous testing when we can test for compile errors
+test nonnull {
+    const val: u32 = 299;
+    const m = match(&@as(??u32, val));
+    const res = m.arm(bind_if("proof", nonnull(range(.ii, 0, 299))));
+
+    try std.testing.expectEqual(299, res.?.proof);
 }
