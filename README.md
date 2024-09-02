@@ -105,7 +105,8 @@ You can only have custom array matcher per array/slice pattern
     try std.testing.expectEqualSlices(u8, &.{ 9, 100, 140 }, res3.?.tail);
     try std.testing.expectEqual(null, res4);
     try std.testing.expectEqualSlices(u8, &.{ 9, 100 }, res5.?.middle);
-}```
+}
+```
 
 To make your own, you need a thing of type `fn (comptime type, comptime ?usize) SubSliceMatcher`. The first parameter is the child type of the array or slice, and the second is the length of the array, or null if it is a slice
 SubSliceMatcher has a `captures` field similar to a custom matcher, as well as a `tryBind` fn. The only difference is that instead of `val_ptr`, it will take `subslice`,
